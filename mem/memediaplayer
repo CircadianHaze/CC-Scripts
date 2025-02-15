@@ -1,0 +1,460 @@
+------------------------ Params
+local songVolume = 1
+local firstSpeaker = 0
+local lastSpeaker = 100
+local redstoneStartSide = nil
+local loopAmount = 2 -- Does nothing if redstoneStartSide is nil
+local diskSide = "bottom"
+
+----------------------------
+local songBpm = 240
+local songLength = 1
+local songCursor = 1
+local songBeats = 0
+local loopsLeft = 0
+
+local sp = {}
+local _i = 0
+for i=firstSpeaker, lastSpeaker do
+	local p = peripheral.wrap("speaker_"..i)
+	if (p ~= nil) then
+	    sp[_i] = p
+	    _i = _i+1
+    end
+end
+
+local nextSpeaker = 0
+local speakerCount = table.getn(sp)
+
+local instrumentCount = 11
+local instruments = {
+    -- musical
+    {["name"] = "piano", ["file"] = "block.note.harp"},
+    {["name"] = "bass", ["file"] = "block.note.bass"},
+    {["name"] = "bell", ["file"] = "block.note.bell"},
+    {["name"] = "chime", ["file"] = "block.note.chime"},
+    {["name"] = "xhylophone", ["file"] = "block.note.xylophone"},
+    {["name"] = "flute", ["file"] = "block.note.flute"},
+    {["name"] = "guitar", ["file"] = "block.note.guitar"},
+    {["name"] = "kick", ["file"] = "block.note.basedrum"},
+    {["name"] = "hat", ["file"] = "block.note.hat"},
+    {["name"] = "cimbal", ["file"] = "block.sand.break"},
+    {["name"] = "snare", ["file"] = "block.note.snare"},
+    -- sfx
+    {["name"] = "levelup", ["file"] ="entity.player.levelup"}
+}
+
+local song = {}
+local patterns = {}
+
+local currentPattern = 1
+local currentSongPattern = 1
+local cursor = 1
+local playing = false
+
+local playingTimer = nil
+local delayedNoteTimer = nil
+local delayedAllChannels = false
+local delayTime = 1
+
+local progressTimer = nil
+
+-- Data of the current pattern
+local function getCurrentNotes(time)
+	local notes = patterns[currentPattern].channels[currentChannel].notes[time]
+	if (notes == nil) then
+		return ""
+    else
+    	return notes
+    end
+end
+
+-- Data of the pattern for the specified channel
+local function getChannelNotes(channel, time)
+	local notes = patterns[currentPattern].channels[channel].notes[time]
+	if (notes == nil) then
+		return ""
+    else
+    	return notes
+    end
+end
+
+-- Get an instrument by name
+local function getInstrumentByName(name)
+	for k, v in pairs(instruments) do
+		if (v.name == name) then
+			return v
+		end
+	end
+	error("Invalid instrument name")
+end
+
+-- Get an instrument ID by name
+local function getInstrumentIDByName(name)
+	for i=1, instrumentCount do
+		if (instruments[i].name == name) then
+			return i
+		end
+	end
+	error("Invalid instrument name")
+end
+
+-- Note character to note number
+local function characterToNote(c)
+    local delayed = true
+    if (string.byte(c) >= 97) then
+        delayed = false
+    end
+    
+    if (delayed) then
+        return string.byte(c)-65, delayed
+    else
+        return string.byte(c)-97, delayed
+    end
+end
+
+-- Note number to note character
+local function noteToCharacter(n, delayed)
+    if (delayed) then
+        return string.char(tonumber(n)+65) --Mayuscula
+    else
+        return string.char(tonumber(n)+97) --minuscula
+    end
+end
+
+-- Pitch of a note number
+local function notePitch(n)
+    return math.pow(2, (n-12)/12)
+end
+
+-- Pitch of a note character
+local function charPitch(c)
+    return notePitch(characterToNote(c))
+end
+
+local function playSoundEffect(soundname, vol, pitch)
+	sp[nextSpeaker].playSound(getInstrumentByName(soundname).file, vol, pitch)
+    nextSpeaker = nextSpeaker+1
+    if (nextSpeaker > speakerCount) then
+        nextSpeaker = 0
+    end
+end
+
+-- Play a single note number
+local function playNote(inst, vol, note)
+    sp[nextSpeaker].playSound(instruments[inst].file, vol, note)
+    nextSpeaker = nextSpeaker+1
+    if (nextSpeaker > speakerCount) then
+        nextSpeaker = 0
+    end
+end
+
+-- Play a string of notes
+local function playBar(inst, vol, notes, delayed)
+    for n=1, string.len(notes) do
+        local note = string.sub(notes, n, n)
+        if (delayed and string.byte(note) < 97) then -- If its delayed, play only uppercases
+        	playNote(inst, vol, charPitch(note))
+        elseif (not delayed and string.byte(note) >= 97) then -- If not, play only lowercases
+        	playNote(inst, vol, charPitch(note))
+        end
+    end
+end
+
+-- Play the delayed bar
+local function playCurrentBarDelayed()
+	if (delayedAllChannels) then
+		for i=1, instrumentCount do
+			playBar(i, songVolume, getChannelNotes(i, delayTime), true)
+		end
+	else
+		playBar(currentChannel, songVolume, getCurrentNotes(delayTime), true)
+	end
+end
+
+-- Play the bar at a specified time
+local function playSpecificBar(time, allChannels)
+	delayTime = time
+	if (allChannels) then
+		for i=1, instrumentCount do
+			playBar(i, songVolume, getChannelNotes(i, time), false)
+		end
+	else
+		playBar(currentChannel, songVolume, getCurrentNotes(time), false)
+	end
+	delayedNoteTimer = os.startTimer(30/(songBpm*patterns[currentPattern].speed)-0.001)
+	delayedAllChannels = allChannels
+end
+
+-- Play the current channel's bar currently indicated by the cursor
+local function playCurrentChannelBar()
+	playSpecificBar(cursor, false)
+end
+
+-- Play the every bar currently indicated by the cursor
+local function playCurrentBar()
+	playSpecificBar(cursor, true)
+end
+
+local function updateProgress()
+    term.setCursorPos(6, 13)
+    local percent = songCursor/songBeats
+    local characters = math.ceil(percent*40)
+    term.setBackgroundColor(colors.orange)
+    term.write(string.rep(" ", characters))
+    term.setBackgroundColor(colors.brown)
+    term.write(string.rep(" ", 40-characters))
+    term.setBackgroundColor(colors.black)
+end
+
+-- StartPlaying
+local function playFromCursor()
+    if (songBeats > 0) then
+        playing = true
+        playingTimer = os.startTimer(60/(songBpm*patterns[currentPattern].speed))
+        progressTimer = os.startTimer(1)
+        updateProgress()
+        playCurrentBar()
+        term.setCursorPos(5, 12)
+        term.setTextColor(colors.lime)
+        term.write(" > Play        ")
+    end
+end
+
+-- StartPlaying
+local function playFromStart()
+    if (not loadSong()) then return end
+	cursor = 1
+    songCursor = 1
+	currentXOffset = 0
+    playing = true
+    playingTimer = os.startTimer(60/(songBpm*patterns[currentPattern].speed))
+    progressTimer = os.startTimer(1)
+    updateProgress()
+    playCurrentBar()
+    term.setCursorPos(5, 12)
+    term.setTextColor(colors.lime)
+    term.write("|> Play         ")
+end
+
+-- Pause
+local function stop()
+    playing = false
+    cursor = 1
+    songCursor = 1
+    term.setCursorPos(5, 12)
+    term.setTextColor(colors.red)
+    term.write("[] Stop     ")
+end
+
+-- Pause
+local function pause()
+    playing = false
+    term.setCursorPos(5, 12)
+    term.setTextColor(colors.red)
+    term.write("|| Pause    ")
+end
+
+local function newPattern()
+	local p = {
+    	["channels"] = {},
+    	["length"] = defaultPatternLength,
+    	["speed"] = 1,
+    	["measure"] = defaultMeasure
+	}
+    for i=1, instrumentCount do
+    	p.channels[i] = {
+    		["notes"] = {}
+		}
+    end
+    return p
+end
+
+local function newSong()
+	song = {
+		["patterns"] = {}
+	}
+	currentPattern = 1
+	patterns[currentPattern] = newPattern()
+end
+
+-- Load song from disk
+function loadSong()
+ if (disk.isPresent(diskSide)) then
+	local f = fs.open("disk/memsong.txt", "r")
+ if (f == nil) then
+     return false
+ end
+	local fileTitle = "unknown"
+	local fileBpm = 240
+	local fileSong = {}
+
+	newSong()
+	patterns = {}
+ songBeats = 0
+
+	local line = f.readLine()
+ 
+	repeat
+		if (line == "title") then
+			fileTitle = f.readLine()
+		elseif (line == "bpm") then
+			fileBpm = tonumber(f.readLine())
+		elseif (line == "structure") then
+			local songPart = f.readLine()
+			local i=1
+			repeat
+				fileSong[i] = tonumber(songPart)
+				i = i+1
+				songPart = f.readLine()
+			until songPart == ""
+		elseif (line == "pattern") then
+			local currentPattern = tonumber(f.readLine())
+			if (currentPattern ~= nil) then
+				patterns[currentPattern] = newPattern()
+				local pLine = f.readLine()
+				repeat
+					local broken = false
+					if (pLine == "length") then
+						patterns[currentPattern].length = tonumber(f.readLine())
+					elseif (pLine == "measure") then
+						patterns[currentPattern].measure = tonumber(f.readLine())
+					elseif (pLine == "speed") then
+						patterns[currentPattern].speed = tonumber(f.readLine())
+					elseif (pLine == "notes") then
+						local instrument = f.readLine()
+						if (instrument ~= "") then
+							repeat
+								local noteString = f.readLine()
+								local notes = {}
+								local pointer = 1
+								local spaces = 0
+
+								for i=1, string.len(noteString) do
+									
+									local char = string.sub(noteString, i, i)
+
+									if (tonumber(char)) then -- If the character is a number, count spaces
+										spaces = spaces*10
+										spaces = spaces+tonumber(char)
+									else
+										pointer = pointer+spaces
+										if (notes[pointer] == nil) then
+											notes[pointer] = ""
+										end
+										notes[pointer] = notes[pointer]..char
+										spaces = 0
+									end
+								end
+
+								patterns[currentPattern].channels[getInstrumentIDByName(instrument)].notes = notes
+                                songBeats = songBeats + patterns[currentPattern].length
+
+								instrument = f.readLine()
+							until instrument == ""
+							broken = true
+						end
+					end
+					if (broken) then
+						pLine = nil
+					else
+						pLine = f.readLine()
+					end
+				until pLine == "" or pLine == nil
+			end
+		end
+		line = f.readLine()
+	until line == "" or line == nil
+	f.close()
+
+	song.patterns = fileSong
+	songLength = #song.patterns
+ songBeats = 0
+ for i=1, songLength do
+     songBeats = songBeats+patterns[song.patterns[i]].length
+ end
+	songBpm = fileBpm
+	currentSongPattern = 1
+	currentPattern = song.patterns[1]
+
+ term.setCursorPos(1, 8)
+ term.setBackgroundColor(colors.black)
+ term.setTextColor(colors.yellow)
+ term.write("                                         ")
+ term.setCursorPos(1, 8)
+ term.write("Cancion: "..fileTitle)
+ return true
+ else
+ return false
+ end
+end
+
+term.clear()
+term.setCursorPos(1,1)
+term.setBackgroundColor(colors.black)
+term.setTextColor(colors.orange)
+print("~ Memdia Player ~")
+print("")
+print("Enter: Cargar canción / Iniciar desde el principio / Pausa")
+print("Espacio: Pausa / Play")
+
+-- Update
+while true do
+    local event, a, b, c = os.pullEvent()
+    if (event == "timer") then
+    	local completed = a
+    	if (completed == playingTimer) then
+	        if (playing) then
+	        	local patternLength = patterns[currentPattern].length
+                cursor = cursor+1
+                songCursor = songCursor+1
+                if (cursor > patternLength) then
+                	currentSongPattern = currentSongPattern+1
+                	if (currentSongPattern > songLength) then
+                		if (redstoneStartSide ~= nil) then
+                			loopsLeft = loopsLeft-1
+                			if (loopsLeft <= 0) then
+                				loopsLeft = loopAmount
+                				while (not rs.getInput(redstoneStartSide)) do
+                					os.pullEvent("redstone")
+                				end
+                			end
+                		end
+	                	currentSongPattern = 1
+                        songCursor = 1
+                        updateProgress()
+	                end
+	                currentPattern = song.patterns[currentSongPattern]
+	                cursor = 1
+	                currentXOffset = 0
+                end
+                playCurrentBar()
+                playingTimer = os.startTimer(60/(songBpm*patterns[currentPattern].speed))
+	        end
+	    elseif (completed == delayedNoteTimer) then
+	    	playCurrentBarDelayed()
+        elseif (completed == progressTimer) then
+            if (playing) then
+                updateProgress()
+                progressTimer = os.startTimer(1)
+            end
+	    end
+    elseif (event == "key") then
+        local key = a
+        if (key == keys.space) then
+        	if (playing) then
+        		pause()
+        	else
+        		playFromCursor()
+        	end
+        	
+        elseif (key == keys.enter) then
+        	if (playing) then
+        		pause()
+        	else
+        		playFromStart()
+        	end
+        	
+        end
+    end
+end

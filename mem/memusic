@@ -1,0 +1,1275 @@
+-------------------------- Params
+local songVolume = 3
+local firstSpeaker = 0
+local lastSpeaker = 100
+local songLoop = 10
+local songStartRedstoneSide = nil
+local language = "es"
+-----------------------------------
+
+local loopsLeft = 0
+local defaultPatternLength = 32
+local defaultMeasure = 4
+local songBpm = 240
+local songLength = 1
+
+local sp = {}
+local _i = 0
+for i=firstSpeaker, lastSpeaker do
+	local p = peripheral.wrap("speaker_"..i)
+	if (p ~= nil) then
+	    sp[_i] = p
+	    _i = _i+1
+    end
+end
+
+local nextSpeaker = 0
+local speakerCount = table.getn(sp)
+
+local instrumentCount = 12
+local instruments = {
+    -- musical
+    {["name"] = "piano", ["file"] = "block.note_block.harp"},
+    {["name"] = "bit", ["file"] = "block.note_block.bit"},
+	{["name"] = "bass", ["file"] = "block.note_block.bass"},
+    {["name"] = "bell", ["file"] = "block.note_block.bell"},
+    {["name"] = "chime", ["file"] = "block.note_block.chime"},
+    {["name"] = "xhylophone", ["file"] = "block.note_block.xylophone"},
+    {["name"] = "flute", ["file"] = "block.note_block.flute"},
+    {["name"] = "guitar", ["file"] = "block.note_block.guitar"},
+    {["name"] = "kick", ["file"] = "block.note_block.basedrum"},
+    {["name"] = "hat", ["file"] = "block.note_block.hat"},
+    {["name"] = "cimbal", ["file"] = "block.sand.break"},  --block.sand_block.break
+    {["name"] = "snare", ["file"] = "block.note_block.snare"},
+    -- sfx
+    
+    {["name"] = "levelup", ["file"] ="entity.player.levelup"}
+}
+
+local notes = {
+    "F#", "G ", "G#", "A ", "A#", "B ",
+    "C ", "C#", "D ", "D#", "E ", "F "
+}
+
+local song = {}
+local patterns = {}
+
+local currentPattern = 1
+local currentSongPattern = 1
+local currentChannel = 1
+local currentYOffset = 0
+local currentXOffset = 0
+local cursor = 1
+local playing = false
+local pressingShift = false
+
+local playingTimer = nil
+local delayedNoteTimer = nil
+local delayedAllChannels = false
+local delayTime = 1
+
+local menuSongPatternScroll = 1
+local menuChannelScroll = 1
+
+local beatsOnScreen = 32
+local scrW, scrH = term.getSize()
+
+-- Data of the current pattern
+local function getCurrentNotes(time)
+	local notes = patterns[currentPattern].channels[currentChannel].notes[time]
+	if (notes == nil) then
+		return ""
+    else
+    	return notes
+    end
+end
+
+-- Data of the pattern for the specified channel
+local function getChannelNotes(channel, time)
+	local notes = patterns[currentPattern].channels[channel].notes[time]
+	if (notes == nil) then
+		return ""
+    else
+    	return notes
+    end
+end
+
+-- Get an instrument by name
+local function getInstrumentByName(name)
+	for k, v in pairs(instruments) do
+		if (v.name == name) then
+			return v
+		end
+	end
+	error("Invalid instrument name")
+end
+
+-- Get an instrument ID by name
+local function getInstrumentIDByName(name)
+	for i=1, instrumentCount do
+		if (instruments[i].name == name) then
+			return i
+		end
+	end
+	error("Invalid instrument name")
+end
+
+-- Note character to note number
+local function characterToNote(c)
+    local delayed = true
+    if (string.byte(c) >= 97) then
+        delayed = false
+    end
+    
+    if (delayed) then
+        return string.byte(c)-65, delayed
+    else
+        return string.byte(c)-97, delayed
+    end
+end
+
+-- Note number to note character
+local function noteToCharacter(n, delayed)
+    if (delayed) then
+        return string.char(tonumber(n)+65) --Mayuscula
+    else
+        return string.char(tonumber(n)+97) --minuscula
+    end
+end
+
+-- Pitch of a note number
+local function notePitch(n)
+    return math.pow(2, (n-12)/12)
+end
+
+-- Pitch of a note character
+local function charPitch(c)
+    return notePitch(characterToNote(c))
+end
+
+local function playSoundEffect(soundname, vol, pitch)
+	sp[nextSpeaker].playSound(getInstrumentByName(soundname).file, vol, pitch)
+    nextSpeaker = nextSpeaker+1
+    if (nextSpeaker > speakerCount) then
+        nextSpeaker = 0
+    end
+end
+
+-- Play a single note number
+local function playNote(inst, vol, note)
+    sp[nextSpeaker].playSound(instruments[inst].file, vol, note)
+    nextSpeaker = nextSpeaker+1
+    if (nextSpeaker > speakerCount) then
+        nextSpeaker = 0
+    end
+end
+
+-- Play a string of notes
+local function playBar(inst, vol, notes, delayed)
+    for n=1, string.len(notes) do
+        local note = string.sub(notes, n, n)
+        if (delayed and string.byte(note) < 97) then -- If its delayed, play only uppercases
+        	playNote(inst, vol, charPitch(note))
+        elseif (not delayed and string.byte(note) >= 97) then -- If not, play only lowercases
+        	playNote(inst, vol, charPitch(note))
+        end
+    end
+end
+
+-- Play the delayed bar
+local function playCurrentBarDelayed()
+	if (delayedAllChannels) then
+		for i=1, instrumentCount do
+			playBar(i, songVolume, getChannelNotes(i, delayTime), true)
+		end
+	else
+		playBar(currentChannel, songVolume, getCurrentNotes(delayTime), true)
+	end
+end
+
+-- Play the bar at a specified time
+local function playSpecificBar(time, allChannels)
+	delayTime = time
+	if (allChannels) then
+		for i=1, instrumentCount do
+			playBar(i, songVolume, getChannelNotes(i, time), false)
+		end
+	else
+		playBar(currentChannel, songVolume, getCurrentNotes(time), false)
+	end
+	delayedNoteTimer = os.startTimer(30/(songBpm*patterns[currentPattern].speed)-0.001)
+	delayedAllChannels = allChannels
+end
+
+-- Play the current channel's bar currently indicated by the cursor
+local function playCurrentChannelBar()
+	playSpecificBar(cursor, false)
+end
+
+-- Play the every bar currently indicated by the cursor
+local function playCurrentBar()
+	playSpecificBar(cursor, true)
+end
+
+-- Add a character to the middle of a string
+local function addCharAt(str, char, pos)
+    local prev = string.sub(str, 1, pos)
+    local post = string.sub(str, pos+1, string.len(str))
+    return prev..char..post
+end
+
+-- Remove a character from a string
+local function removeCharacterAt(str, pos)
+    local prev = string.sub(str, 1, pos-1)
+    local post = string.sub(str, pos+1, string.len(str))
+    return prev..post
+end
+
+-- Replace a character in the middle of a string
+local function replaceCharAt(str, char, pos)
+    local prev = string.sub(str, 1, pos)
+    local post = string.sub(str, pos+2, string.len(str))
+    return prev..char..post
+end
+
+-- Pixel coordinates to time and note character
+local function pixelToMusic(x, y, delayed)
+    local time = x-3+currentXOffset
+    local note = noteToCharacter(scrH-y+currentYOffset, delayed)
+    return time, note
+end
+
+-- Time and note character to pixel coordinates
+local function musicToPixel(time, char)
+    local noteNumber, delayed = characterToNote(char)
+    local x = time+3-currentXOffset
+    local y = -noteNumber+currentYOffset+scrH
+    return x, y
+end
+
+-- StartPlaying
+local function playFromCursor()
+    playing = true
+    playingTimer = os.startTimer(60/(songBpm*patterns[currentPattern].speed))
+    playCurrentBar()
+end
+
+-- StartPlaying
+local function playFromStart()
+	cursor = 1
+	currentXOffset = 0
+    playing = true
+    playingTimer = os.startTimer(60/(songBpm*patterns[currentPattern].speed))
+    playCurrentBar()
+end
+
+-- Pause
+local function stop()
+    playing = false
+    cursor = 1
+end
+
+-- Pause
+local function pause()
+    playing = false
+end
+
+-- Draw the musical sheet section of the screen
+local function DrawPattern()
+    local channel = currentChannel
+    local pattern = currentPattern
+    local xoffset = currentXOffset
+    local yoffset = currentYOffset
+
+    if (patterns[pattern] == nil) then return end
+
+    local measure = patterns[pattern].measure
+    local patternLength = patterns[pattern].length
+
+    for _y=1, scrH-2 do
+        local y = scrH-_y
+        local octave = math.floor((_y+yoffset-7)/12)+1
+        local n = (_y+yoffset)%12
+        local c = xoffset
+        term.setCursorPos(1,y+1)
+        
+        term.setBackgroundColor(colors.black)
+        if (n==1 or n==3 or n==5 or n==8 or n==10) then
+            term.setTextColor(colors.blue)
+        else
+            term.setTextColor(colors.cyan)
+        end
+        term.write(notes[(n-1)%12+1]..tostring(octave))
+        
+        local lineBackgroundColor = colors.white
+        local lineTextColor = colors.lightGray
+        local blackNote = false
+        if (n==1 or n==3 or n==5 or n==8 or n==10) then
+            lineBackgroundColor = colors.lightGray
+            lineTextColor = colors.gray
+            blackNote = true
+        end
+
+        local patternLength = patterns[pattern].length
+        for c=xoffset, math.min(patternLength-1, xoffset+beatsOnScreen-1) do
+        	term.setBackgroundColor(lineBackgroundColor)
+            term.setTextColor(lineTextColor)
+
+            -- Draw Cursor Bar
+            if (cursor == c+1) then
+            	if (playing) then
+            		term.setBackgroundColor(colors.red)
+	            	term.setTextColor(colors.black)
+            	else
+	            	term.setBackgroundColor(colors.yellow)
+	            	if (blackNote) then
+	            		term.setTextColor(colors.brown)
+		            else
+		            	term.setTextColor(colors.orange)
+		            end
+		        end
+            end
+
+            if (c%(measure*4) == 0) then
+                term.write("|")
+            elseif (c%measure == 0) then
+                term.write(",")
+            else
+           		term.write("_")
+           	end
+        end
+    end
+    term.setCursorPos(1,1)
+    term.setBackgroundColor(colors.black)
+    term.setTextColor(colors.yellow)
+    term.write(string.rep(" ", measure+3))
+    local i = 1+(-xoffset)%measure
+    local firstBeat = math.floor((xoffset-1)/measure)+1
+    for c=firstBeat, math.min(firstBeat+beatsOnScreen/measure-1, patternLength/measure-1) do
+        term.setCursorPos(3+i, 2)
+        term.write(tonumber(c+1))
+        term.write(string.rep(" ", measure))
+        i = i+measure
+    end
+    
+    -- Draw other instruments notes
+    for ch=1, instrumentCount do
+    	if (ch ~= currentChannel) then
+		    for time=xoffset+1, math.min(xoffset+beatsOnScreen, patternLength) do
+		        local notes = getChannelNotes(ch, time)
+		        local paintedNotes = {}
+		        for n=1, string.len(notes) do
+		            local noteCharacter = string.sub(notes, n, n)
+		            local delayed = true
+		            if (string.byte(noteCharacter) >= 97) then
+		            	delayed = false
+		            end
+		            local x, y = musicToPixel(time, noteCharacter)
+		            term.setTextColor(colors.lightGray)
+		            if (y > 2) then
+		            	if (paintedNotes[y]) then
+		            		term.setBackgroundColor(colors.pink)
+			                term.setCursorPos(x, y) 
+			                term.write(string.char(15))
+		            	else
+			            	if (delayed) then
+			            		term.setBackgroundColor(colors.pink)
+				                term.setCursorPos(x, y) 
+				                term.write(string.char(14))
+				                paintedNotes[y] = true
+			            	else
+				            	term.setBackgroundColor(colors.lightBlue)
+				                term.setCursorPos(x, y) 
+				                term.write(string.char(14))
+				                paintedNotes[y] = true
+				            end
+				        end
+		            end
+		        end
+		    end
+	    end
+	end
+
+    -- Draw current instruments notes
+    for time=xoffset+1, math.min(xoffset+beatsOnScreen, patternLength) do
+        local notes = getCurrentNotes(time)
+        local paintedNotes = {}
+        for n=1, string.len(notes) do
+            local noteCharacter = string.sub(notes, n, n)
+            local delayed = true
+            if (string.byte(noteCharacter) >= 97) then
+            	delayed = false
+            end
+            local x, y = musicToPixel(time, noteCharacter)
+            term.setTextColor(colors.black)
+            if (y > 2) then
+            	if (paintedNotes[y]) then
+            		term.setBackgroundColor(colors.purple)
+	                term.setCursorPos(x, y) 
+	                term.write(string.char(15))
+            	else
+	            	if (delayed) then
+	            		term.setBackgroundColor(colors.red)
+		                term.setCursorPos(x, y) 
+		                term.write(string.char(14))
+		                paintedNotes[y] = true
+	            	else
+		            	term.setBackgroundColor(colors.blue)
+		                term.setCursorPos(x, y) 
+		                term.write(string.char(14))
+		                paintedNotes[y] = true
+		            end
+		        end
+            end
+        end
+    end
+
+    term.setBackgroundColor(colors.pink)
+    term.setTextColor(colors.black)
+    term.setCursorPos(1,1)
+    term.write(" Part "..tostring(song.patterns[currentSongPattern]).." ")
+
+    term.setBackgroundColor(colors.black)
+    term.write(" ")
+
+    term.setBackgroundColor(colors.lime)
+    term.write(" "..instruments[currentChannel].name.." ")
+end
+
+-- Draw the control panel
+local function DrawPanel()
+    local panelWidth = scrW-(beatsOnScreen+3)
+    local x = scrW-panelWidth+1
+    term.setBackgroundColor(colors.brown)
+    for y=1, scrH do
+        term.setCursorPos(x,y)
+        term.write(string.rep(" ", panelWidth))
+    end
+
+    term.setBackgroundColor(colors.orange)
+    term.setTextColor(colors.black)
+
+    -- Menues
+    term.setCursorPos(x+1, 1)
+    term.write("SAV")
+
+    term.setCursorPos(x+5, 1)
+    term.write("LOA")
+
+    term.setBackgroundColor(colors.brown)
+    term.setTextColor(colors.orange)
+    term.setCursorPos(x+9, 1)
+    term.write("Bpm:")
+    term.setBackgroundColor(colors.orange)
+    term.setTextColor(colors.black)
+    term.write(songBpm)
+
+    -- Patterns
+    term.setTextColor(colors.black)
+    if (menuSongPatternScroll == 1) then
+    	term.setBackgroundColor(colors.gray)
+    else
+	    term.setBackgroundColor(colors.lightGray)
+	end
+    term.setCursorPos(x+1, 3)
+    term.write("   "..string.char(30).."   ")
+
+    local sp = menuSongPatternScroll
+    for y= 4, 8 do
+    	if (sp == currentSongPattern) then
+	    		term.setBackgroundColor(colors.pink)
+	    else
+    		term.setBackgroundColor(colors.black)
+    	end
+	    term.setCursorPos(x+1, y)
+	    term.write("       ")
+
+	    if (sp <= songLength) then
+		    if (sp == currentSongPattern) then
+	    		term.setBackgroundColor(colors.pink)
+	    		term.setTextColor(colors.black)
+	    	else
+	    		term.setBackgroundColor(colors.black)
+	    		term.setTextColor(colors.pink)
+	    	end
+
+		    term.setCursorPos(x+1, y)
+		    term.write("#"..sp)
+
+		    term.setCursorPos(x+5, y)
+		    term.write("P"..song.patterns[sp])
+
+		    sp = sp+1
+		end
+	end
+
+	term.setTextColor(colors.black)
+	if (menuSongPatternScroll >= songLength-4) then
+    	term.setBackgroundColor(colors.gray)
+    else
+	    term.setBackgroundColor(colors.lightGray)
+	end
+    term.setCursorPos(x+1, 9)
+    term.write("   "..string.char(31).."   ")
+
+     -- Instruments
+    term.setTextColor(colors.black)
+    if (menuChannelScroll == 1) then
+    	term.setBackgroundColor(colors.gray)
+    else
+	    term.setBackgroundColor(colors.lightGray)
+	end
+    term.setCursorPos(x+9, 3)
+    term.write("   "..string.char(30).."   ")
+
+    local ch = menuChannelScroll
+    local y = 4
+    for y= 4, 8 do
+    	if (ch == currentChannel) then
+	    	term.setBackgroundColor(colors.lime)
+	    else
+    		term.setBackgroundColor(colors.black)
+    	end
+	    term.setCursorPos(x+9, y)
+	    term.write("       ")
+
+    	term.setCursorPos(x+9, y)
+	    if (ch == currentChannel) then
+    		term.setBackgroundColor(colors.lime)
+    		term.setTextColor(colors.black)
+    	else
+    		term.setBackgroundColor(colors.black)
+    		term.setTextColor(colors.lime)
+    	end
+
+    	term.write(string.sub(instruments[ch].name, 1, 7))
+		ch = ch+1
+	end
+
+	term.setTextColor(colors.black)
+	if (menuChannelScroll >= instrumentCount-4) then
+    	term.setBackgroundColor(colors.gray)
+    else
+	    term.setBackgroundColor(colors.lightGray)
+	end
+    term.setCursorPos(x+9, 9)
+    term.write("   "..string.char(31).."   ")
+
+    term.setTextColor(colors.black)
+
+
+    -- Pattern Options
+    term.setTextColor(colors.black)
+
+    term.setCursorPos(x+1, 10)
+    term.setBackgroundColor(colors.purple)
+    term.write("repeat ")
+
+    term.setCursorPos(x+1, 11)
+    term.setBackgroundColor(colors.pink)
+    term.write("  new  ")
+
+    term.setCursorPos(x+9, 11)
+    term.setBackgroundColor(colors.pink)
+    term.write("duplic.")
+
+    term.setCursorPos(x+1, 12)
+    term.setBackgroundColor(colors.purple)
+    term.write("move  "..string.char(30))
+
+    term.setCursorPos(x+9, 12)
+    term.setBackgroundColor(colors.purple)
+    term.write("  P +1  ")
+
+    term.setCursorPos(x+1, 13)
+    term.setBackgroundColor(colors.pink)
+    term.write("move  "..string.char(31))
+
+    term.setCursorPos(x+9, 13)
+    term.setBackgroundColor(colors.pink)
+    term.write("  P -1  ")
+
+    
+    -- Settings
+    term.setCursorPos(x+1, 14)
+    term.setBackgroundColor(colors.brown)
+    term.setTextColor(colors.pink)
+    term.write("Speed:  ")
+    term.setBackgroundColor(colors.purple)
+    term.setTextColor(colors.black)
+    term.write(" "..patterns[currentPattern].speed.." ")
+
+    term.setCursorPos(x+1, 15)
+    term.setBackgroundColor(colors.brown)
+    term.setTextColor(colors.pink)
+    term.write("Length: ")
+    term.setBackgroundColor(colors.pink)
+    term.setTextColor(colors.black)
+    term.write(" "..patterns[currentPattern].length.." ")
+
+    term.setCursorPos(x+1, 16)
+    term.setBackgroundColor(colors.brown)
+    term.setTextColor(colors.pink)
+    term.write("Measure:")
+    term.setBackgroundColor(colors.purple)
+    term.setTextColor(colors.black)
+    term.write(" "..patterns[currentPattern].measure.." ")
+
+    term.setCursorPos(x+1, 17)
+    term.setBackgroundColor(colors.brown)
+    term.setTextColor(colors.lime)
+    term.write("Volume: ")
+    term.setBackgroundColor(colors.lime)
+    term.setTextColor(colors.black)
+    term.write(" "..songVolume.." ")
+
+
+    -- More Options
+    term.setCursorPos(x+1, 18)
+    term.setBackgroundColor(colors.green)
+    term.write("Clean Instrum.")
+
+    term.setCursorPos(x+1, 19)
+    term.setBackgroundColor(colors.pink)
+    term.write("Delete Part")
+
+end
+
+-- Draw the entire screen
+local function DrawScreen()
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setTextColor(colors.white)
+    DrawPattern()
+    DrawPanel()
+end
+
+-- GUI Functions
+-- Scroll sheet
+local function scrollRight() if (currentXOffset < patterns[currentPattern].length-beatsOnScreen) then currentXOffset = currentXOffset+1
+DrawScreen() end end
+local function scrollLeft() if (currentXOffset > 0) then currentXOffset = currentXOffset-1
+DrawScreen() end end
+local function scrollUp() if (currentYOffset < 27-scrH) then currentYOffset = currentYOffset+1
+DrawScreen() end end
+local function scrollDown() if (currentYOffset > 0) then currentYOffset = currentYOffset-1
+DrawScreen() end end
+-- Scroll song patterns
+local function nextSongPattern() if (menuSongPatternScroll < songLength-4) then menuSongPatternScroll = menuSongPatternScroll+1
+DrawPanel() end end
+local function prevSongPattern() if (menuSongPatternScroll > 1) then menuSongPatternScroll = menuSongPatternScroll-1
+DrawPanel() end end
+-- Scroll instruments
+local function nextChannel() if (menuChannelScroll < instrumentCount-4) then menuChannelScroll = menuChannelScroll+1
+DrawPanel() end end
+local function prevChannel() if (menuChannelScroll > 1) then menuChannelScroll = menuChannelScroll-1
+DrawPanel() end end
+
+local function newPattern()
+	local p = {
+    	["channels"] = {},
+    	["length"] = defaultPatternLength,
+    	["speed"] = 1,
+    	["measure"] = defaultMeasure
+	}
+    for i=1, instrumentCount do
+    	p.channels[i] = {
+    		["notes"] = {}
+		}
+    end
+    return p
+end
+
+local function newSong()
+	song = {
+		["patterns"] = {}
+	}
+	currentPattern = 1
+	patterns[currentPattern] = newPattern()
+end
+
+-- Save song to a disk
+local function saveSong()
+	if (disk.isPresent("bottom")) then
+		term.setBackgroundColor(colors.brown)
+		term.clear()
+		term.setTextColor(colors.white)
+		term.setCursorPos(10,5)
+		term.write("Nombre de la canción: ")
+		term.setBackgroundColor(colors.white)
+		term.setTextColor(colors.black)
+		term.setCursorPos(10,6)
+		term.write(string.rep(" ", 15))
+		term.setCursorPos(10,6)
+		local title = read()
+		disk.setLabel("bottom", title)
+
+		local f = fs.open("disk/memsong.txt", "w")
+		f.writeLine("title")
+		f.writeLine(title)
+		f.writeLine("bpm")
+		f.writeLine(math.floor(songBpm))
+		f.writeLine("structure")
+		for i=1, songLength do
+			f.writeLine(song.patterns[i])
+		end
+		f.writeLine("")
+		for k, v in pairs(patterns) do
+			f.writeLine("pattern")
+			f.writeLine(k)
+			f.writeLine("length")
+			f.writeLine(v.length)
+			f.writeLine("speed")
+			f.writeLine(v.speed)
+			f.writeLine("measure")
+			f.writeLine(v.measure)
+			f.writeLine("notes")
+			for chkey, ch in pairs(v.channels) do
+				local notesString = ""
+				local spaces = 0
+				for i=1, v.length do
+					if (ch.notes[i] ~= nil and ch.notes[i] ~= "") then
+						if (spaces > 0) then
+							notesString = notesString..spaces..ch.notes[i]
+						else
+							notesString = notesString..ch.notes[i]
+						end
+						spaces = 0
+					end
+					spaces = spaces+1
+				end
+				if (notesString ~= "") then
+					f.writeLine(instruments[chkey].name)
+					f.writeLine(notesString)
+				end
+			end
+			f.writeLine("")
+		end
+		f.close()
+	end
+end
+
+-- Load song from disk
+local function loadSong()
+ term.setBackgroundColor(colors.black)
+ term.clear()
+ term.setCursorPos(1,1)
+ term.setTextColor(colors.orange)
+	print("Loading...")
+	sleep(0.1)
+	local f = fs.open("disk/memsong.txt", "r")
+
+	local fileTitle = "unknown"
+	local fileBpm = 240
+	local fileSong = {}
+
+	newSong()
+	patterns = {}
+
+	local line = f.readLine()
+	repeat
+		if (line == "title") then
+			fileTitle = f.readLine()
+		elseif (line == "bpm") then
+			fileBpm = tonumber(f.readLine())
+		elseif (line == "structure") then
+			local songPart = f.readLine()
+			local i=1
+			repeat
+				fileSong[i] = tonumber(songPart)
+				i = i+1
+				songPart = f.readLine()
+			until songPart == ""
+		elseif (line == "pattern") then
+			local currentPattern = tonumber(f.readLine())
+			if (currentPattern ~= nil) then
+				patterns[currentPattern] = newPattern()
+				local pLine = f.readLine()
+				repeat
+					local broken = false
+					if (pLine == "length") then
+						patterns[currentPattern].length = tonumber(f.readLine())
+					elseif (pLine == "measure") then
+						patterns[currentPattern].measure = tonumber(f.readLine())
+					elseif (pLine == "speed") then
+						patterns[currentPattern].speed = tonumber(f.readLine())
+					elseif (pLine == "notes") then
+						local instrument = f.readLine()
+						if (instrument ~= "") then
+							repeat
+								local noteString = f.readLine()
+								local notes = {}
+								local pointer = 1
+								local spaces = 0
+
+								for i=1, string.len(noteString) do
+									
+									local char = string.sub(noteString, i, i)
+
+									if (tonumber(char)) then -- If the character is a number, count spaces
+										spaces = spaces*10
+										spaces = spaces+tonumber(char)
+									else
+										pointer = pointer+spaces
+										if (notes[pointer] == nil) then
+											notes[pointer] = ""
+										end
+										notes[pointer] = notes[pointer]..char
+										spaces = 0
+									end
+								end
+
+								print("P"..currentPattern.." - "..instrument)
+								if (math.random() < 0.2) then sleep(0.02) end
+        patterns[currentPattern].channels[getInstrumentIDByName(instrument)].notes = notes
+
+								instrument = f.readLine()
+							until instrument == ""
+							broken = true
+						end
+					end
+					if (broken) then
+						pLine = nil
+					else
+						pLine = f.readLine()
+					end
+				until pLine == "" or pLine == nil
+			end
+		end
+		line = f.readLine()
+	until line == "" or line == nil
+ print("done")
+	sleep(0.2)
+	f.close()
+
+	song.patterns = fileSong
+	songLength = #song.patterns
+	songBpm = fileBpm
+	currentSongPattern = 1
+	currentPattern = song.patterns[1]
+end
+
+-- Pattern manipulation
+local function getFirstFreePattern()
+	local i = 1
+	while patterns[i] ~= nil do
+		i = i+1
+	end
+	return i
+end
+
+-- Clear instrument
+local function clearInstrument()
+    patterns[currentPattern].channels[currentChannel].notes = {}
+end
+
+-- New pattern
+local function repeatPattern()
+	songLength = songLength+1
+	for i=songLength, currentSongPattern, -1 do
+		song.patterns[i+1] = song.patterns[i]
+	end
+	currentSongPattern = currentSongPattern+1
+end
+
+-- New pattern
+local function addPattern()
+	currentPattern = getFirstFreePattern()
+	patterns[currentPattern] = newPattern()
+	songLength = songLength+1
+	currentSongPattern = songLength
+	song.patterns[currentSongPattern] = currentPattern
+end
+
+-- Duplicate pattern
+local function duplicatePattern()
+	local oldPattern = currentPattern
+	songLength = songLength+1
+	currentPattern = getFirstFreePattern()
+	patterns[currentPattern] = newPattern()
+	
+	patterns[currentPattern].length = patterns[oldPattern].length
+	patterns[currentPattern].speed = patterns[oldPattern].speed
+	patterns[currentPattern].measure = patterns[oldPattern].measure
+
+	for chkey, ch in pairs(patterns[oldPattern].channels) do
+		for noteskey, notes in pairs(ch.notes) do
+			patterns[currentPattern].channels[chkey].notes[noteskey] = notes
+		end 
+	end
+
+	currentSongPattern = songLength
+	song.patterns[currentSongPattern] = currentPattern
+end
+
+-- Delete Pattern
+local function deletePattern()
+	if (songLength > 1) then
+		for i=currentSongPattern, songLength-1 do
+			song.patterns[i] = song.patterns[i+1] -- Starting from the current, i copy the next pattern 1 slot back
+		end
+		song.patterns[songLength] = nil
+		songLength = songLength-1
+		if (currentSongPattern > songLength) then
+			currentSongPattern = songLength
+		end
+		currentPattern = song.patterns[currentSongPattern]
+	end
+end
+
+-- Change the song pattern number
+local function incrementPattern()
+	local nextPattern = song.patterns[currentSongPattern]+1
+	currentPattern = nextPattern
+	if (patterns[nextPattern] == nil) then
+		patterns[currentPattern] = newPattern()
+	end
+	song.patterns[currentSongPattern] = nextPattern
+end
+
+-- Change the song pattern number
+local function decrementPattern()
+	local nextPattern = song.patterns[currentSongPattern]-1
+	if (nextPattern > 0) then
+		currentPattern = nextPattern
+		if (patterns[nextPattern] == nil) then
+			patterns[currentPattern] = newPattern()
+		end
+		song.patterns[currentSongPattern] = nextPattern
+	end
+end
+
+-- Move pattern up
+local function movePatternUp()
+	if (currentSongPattern > 1) then
+		local aux = song.patterns[currentSongPattern-1]
+		song.patterns[currentSongPattern-1] = song.patterns[currentSongPattern]
+		song.patterns[currentSongPattern] = aux
+		currentSongPattern = currentSongPattern-1
+	end
+end
+
+-- Move pattern up
+local function movePatternDown()
+	if (currentSongPattern < songLength) then
+		local aux = song.patterns[currentSongPattern+1]
+		song.patterns[currentSongPattern+1] = song.patterns[currentSongPattern]
+		song.patterns[currentSongPattern] = aux
+		currentSongPattern = currentSongPattern+1
+	end
+end
+
+-- Place a note at a specific x, y coordinate on the screen
+local function placeNote(x, y, delayed)
+    local time, note = pixelToMusic(x,y,delayed)
+    
+    local notes = getCurrentNotes(time)
+    local done = false
+    -- See if the note is already there, if it is, delete it
+    for n=1, string.len(notes) do
+    	local character = string.sub(notes, n, n)
+        if (character == note) then
+            notes = removeCharacterAt(notes, n)      
+            patterns[currentPattern].channels[currentChannel].notes[time] = notes
+            done = true
+            break
+        end
+    end
+    -- If there is no note there, add it
+    if (not done) then
+        notes = notes..note
+        patterns[currentPattern].channels[currentChannel].notes[time] = notes
+    end
+    
+    -- Play remaining notes
+    playSpecificBar(time, false)
+    
+    -- Redraw sheet
+    DrawScreen()
+end
+
+-- Start
+newSong()
+song.patterns = {1}
+playSoundEffect("levelup", 0.5, 3)
+DrawScreen()
+
+-- Update
+while true do
+    local event, a, b, c = os.pullEvent()
+    if (event == "timer") then
+    	local completed = a
+    	if (completed == playingTimer) then
+	        if (playing) then
+	        	local patternLength = patterns[currentPattern].length
+                cursor = cursor+1
+                if (cursor > patternLength) then
+                	currentSongPattern = currentSongPattern+1
+                	if (currentSongPattern > songLength) then
+	                	currentSongPattern = 1
+	                end
+	                currentPattern = song.patterns[currentSongPattern]
+	                cursor = 1
+	                currentXOffset = 0
+                end
+                if (cursor > currentXOffset+beatsOnScreen) then
+                	currentXOffset = math.min(currentXOffset+beatsOnScreen, patternLength-beatsOnScreen)
+                end
+                playCurrentBar()
+                DrawScreen()
+                playingTimer = os.startTimer(60/(songBpm*patterns[currentPattern].speed))
+	        end
+	    elseif (completed == delayedNoteTimer) then
+	    	playCurrentBarDelayed()
+	    end
+    elseif (event == "key") then
+        local key = a
+        if (key == keys.up) then
+            scrollUp()
+        elseif (key == keys.down) then
+            scrollDown()
+        elseif (key == keys.left) then
+            scrollLeft()
+        elseif (key == keys.right) then
+            scrollRight()
+        elseif (key == keys.leftShift) then
+            pressingShift = true
+        elseif (key == keys.space) then
+        	if (playing) then
+        		pause()
+        	else
+        		playFromCursor()
+        	end
+        	DrawScreen()
+        elseif (key == keys.enter) then
+        	if (playing) then
+        		stop()
+        	else
+        		playFromStart()
+        	end
+        	DrawScreen()
+        end
+    elseif (event == "key_up") then
+        local key = a
+        if (key == keys.leftShift) then
+            pressingShift = false
+        end
+    elseif (event == "mouse_scroll") then
+        local scrollDirection = a
+        if (scrollDirection == 1) then
+            if (not pressingShift) then scrollDown()
+            else scrollRight() end
+        else
+            if (not pressingShift) then scrollUp()
+            else scrollLeft() end
+        end
+    elseif (event == "mouse_click") then
+        local button = a
+        local x = b
+        local y = c
+        -- Note Painter
+        if (x > 3 and x < 4+math.min(beatsOnScreen, patterns[currentPattern].length)) then
+            if (y > 2) then
+            	if (button == 1) then
+                	placeNote(x,y,false) -- Left click = normal note
+                else
+                	placeNote(x,y,true) -- Right click = delayed note
+                end
+            else
+                local time, note = pixelToMusic(x,y)
+                cursor = time
+                playCurrentBar()
+                DrawScreen()
+            end
+        else
+
+	        -- Panel
+	        local panelx = beatsOnScreen+3
+
+	        if (y == 1 and x > panelx+1 and x <= panelx+4) then
+	        	saveSong()
+	        	DrawScreen()
+	        end
+
+	        if (y == 1 and x > panelx+5 and x <= panelx+8) then
+	        	loadSong()
+	        	DrawScreen()
+	        end
+
+	        if (x > panelx+9 and y == 1) then -- Beat
+	       		term.setCursorPos(panelx+15, 1)
+	       		term.setBackgroundColor(colors.yellow)
+	       		term.setTextColor(colors.black)
+	       		term.write("   ")
+	       		term.setCursorPos(panelx+15, 1)
+	       		pause()
+	       		local newBPM = tonumber(read())
+	       		if (newBPM ~= nil) then
+	       			songBpm = math.floor(newBPM)
+	       		end
+	       		DrawScreen()
+	        end
+
+	        -- Patterns
+	        if (x > panelx+1 and x <= panelx+8) then
+	        	if (y == 3) then
+	        		prevSongPattern()
+	        	end
+
+	        	for i=4, 8 do
+	        		if (y == i) then
+	        			local selectedSongPattern = i-4+menuSongPatternScroll
+	        			if (selectedSongPattern <= songLength) then
+	        				currentSongPattern = selectedSongPattern
+	        				currentPattern = song.patterns[currentSongPattern]
+	        				DrawScreen()
+	        			end
+	        			break
+	        		end
+	        	end
+
+	        	if (y == 9) then
+	        		nextSongPattern()
+	        	end
+	        end
+
+	        -- Channels
+	        if (x > panelx+9 and x <= panelx+17) then
+	        	if (y == 3) then
+	        		prevChannel()
+	        	end
+
+	        	for i=4, 8 do
+	        		if (y == i) then
+	        			local selectedChannel = i-4+menuChannelScroll
+	        			if (selectedChannel <= instrumentCount) then
+	        				currentChannel = selectedChannel
+	        				playNote(currentChannel, 1, 1)
+	        				DrawScreen()
+	        			end
+	        			break
+	        		end
+	        	end
+
+	        	if (y == 9) then
+	        		nextChannel()
+	        	end
+	        end
+
+	        -- Pattern options
+	        if (x > panelx and x < panelx+9) then
+
+    
+		        if (y == 10) then -- repeat pattern
+		        	repeatPattern()
+		        	DrawScreen()
+		        end
+
+		        if (y == 11) then -- add pattern
+		        	addPattern()
+		        	DrawScreen()
+		        end
+
+		        if (y == 12) then -- move pattern up
+		        	movePatternUp()
+		        	DrawScreen()
+		        end
+
+		        if (y == 13) then -- move pattern down
+		        	movePatternDown()
+		        	DrawScreen()
+		        end
+		    end
+
+		    if (x > panelx+9 and x < panelx+17) then
+		        if (y == 11) then -- new pattern
+		        	duplicatePattern()
+		        	DrawScreen()
+		        end
+
+		        if (y == 12) then -- pattern +1
+		        	incrementPattern()
+		        	DrawScreen()
+		        end
+
+		        if (y == 13) then -- pattern -1
+		        	decrementPattern()
+		        	DrawScreen()
+		        end
+		    end
+
+            if (x > panelx) then
+
+    	        if (y == 14) then -- Speed
+    	       		term.setCursorPos(panelx+10, 14)
+    	       		term.setBackgroundColor(colors.yellow)
+    	       		term.setTextColor(colors.black)
+    	       		term.write("     ")
+    	       		term.setCursorPos(panelx+10, 14)
+    	       		pause()
+    	       		local input = tonumber(read())
+    	       		if (input ~= nil) then
+    		       		local newspeed = math.max(0.1, input)
+    		       		if (newspeed ~= nil) then
+    		       			patterns[currentPattern].speed = newspeed
+    		       		end
+    		       	end
+    	       		DrawPanel()
+    	        end
+
+    	        if (y == 15) then -- PatternLength
+    	       		term.setCursorPos(panelx+10, 15)
+    	       		term.setBackgroundColor(colors.yellow)
+    	       		term.setTextColor(colors.black)
+    	       		term.write("     ")
+    	       		term.setCursorPos(panelx+10, 15)
+    	       		pause()
+    	       		local newLength = tonumber(read())
+    	       		if (newLength ~= nil) then
+    	       			patterns[currentPattern].length = math.floor(newLength)
+    	       			defaultPatternLength = math.floor(newLength)
+    	       		end
+    	       		DrawScreen()
+    	        end
+
+    	        if (y == 16) then -- Beat
+    	       		term.setCursorPos(panelx+10, 16)
+    	       		term.setBackgroundColor(colors.yellow)
+    	       		term.setTextColor(colors.black)
+    	       		term.write("     ")
+    	       		term.setCursorPos(panelx+10, 16)
+    	       		pause()
+    	       		local newBeat = tonumber(read())
+    	       		if (newBeat ~= nil) then
+    	       			patterns[currentPattern].measure = math.floor(newBeat)
+    	       			defaultMeasure = math.floor(newBeat)
+    	       		end
+    	       		DrawScreen()
+    	        end
+
+                if (y == 17) then -- Volume
+                    term.setCursorPos(panelx+10, 17)
+                    term.setBackgroundColor(colors.yellow)
+                    term.setTextColor(colors.black)
+                    term.write("     ")
+                    term.setCursorPos(panelx+10, 17)
+                    pause()
+                    local newVolume = tonumber(read())
+                    if (newVolume ~= nil) then
+                        songVolume = math.max(0, math.min(newVolume, 1))
+                    end
+                    DrawScreen()
+                end
+            end
+        
+            if (x > panelx and x < panelx+14 and y == 18) then
+                clearInstrument()
+                DrawScreen()
+            end
+	        if (x > panelx and x < panelx+12 and y == 19) then -- delete pattern
+	        	deletePattern()
+	        	DrawScreen()
+	        end
+	    end
+    end
+end
