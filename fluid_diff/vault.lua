@@ -31,7 +31,7 @@ function writeToMonitor(text)
     local lines = wrapText(text, width)
     --mon.clear()
     for i, line in ipairs(lines) do
-        if i > height then break end -- Avoid writing beyond the monitor's height
+        if i > height then break end -- avoid writing beyond the monitor's height
         mon.setCursorPos(1, i + 4)
         mon.write(line)
     end
@@ -57,8 +57,7 @@ local function getPercentage()
     else
         return 0
     end
-    
-    
+       
 end
 
 local function display(title, value, x, y)
@@ -113,29 +112,18 @@ local function calculateRate(theList)
 end
 
 while true do 
-    
-    
+      
     if #numbers > 20 then
-
         result = calculateRate(numbers)
-
     end
     
     local percentageLoop = getPercentage()
     local levelLoop = calculateLevel()
-    
-    --local sum = calculateRate()
     local count = count + 1
-    
     local difference = 0
-
     local infoLoop = getStats()
     local amount2 = infoLoop.amount
     
-    
-    
-
-
     sleep(1)
     local theInfo = getStats()
     amount1 = theInfo.amount
@@ -149,10 +137,4 @@ while true do
     writeToMonitor(myText)
     table.insert(numbers, difference)
 
-
-
-    
-   
-
-    
 end

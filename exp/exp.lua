@@ -5,11 +5,9 @@ local number = 0
 local CURRENT_LEVEL = 0
 local function getAmount()
     if peripheral.isPresent("top") then
-        
         if tank.getInfo() then
             local info = tank.getInfo()
-        end
-        
+        end   
     else
         return 5000000
     end
@@ -18,12 +16,8 @@ local function getAmount()
         local amount = info.amount
         return amount
     else
-        --redstone.setOutput("right", false)
-        --error("tank not found")
         return 5000000
     end
-
-
 end
 
 local function getCapacity()
@@ -34,28 +28,6 @@ local function getCapacity()
 
 end
 
---[[
-local function calculateLevel()   --Calculates amount of levels in tank
-
-    local total = info.amount
-    local level = 0
-
-    if total > 1507 then
-        level = (325 / 18) + math.sqrt((2 / 9) * (total - (54215 / 72)))
-        return level
-
-    elseif total > 352 then
-        level = (81 / 10) + math.sqrt((2 / 5) * (total - (7839 / 40)))
-        return level
-    elseif total > 0 then
-        level = math.sqrt(total + 9) - 3
-        return level
-    else
-        return level
-    end
-
-end
---]]
 local function calculateFromLevel(level) --revise this
     print("Level in CFL: " .. level)
     local totalExperience = 0
@@ -100,11 +72,6 @@ local function giveLevel(amount, level)
     end
 end
 
-
-
-
-
-
 print("What level do you want?: ")
 local desiredLevel = io.read()
 number = tonumber(desiredLevel)
@@ -121,6 +88,5 @@ else
 end
 
 print("done")
-
 
 redstone.setOutput("left", false)

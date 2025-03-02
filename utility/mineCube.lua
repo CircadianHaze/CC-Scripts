@@ -32,7 +32,6 @@ local function mineIt()
         
         wideCount = wideCount + 1
 
-
         if theCount == 1 and wideCount < howWide then
             turnCornerLeft()
             mine_up_down()
@@ -45,7 +44,6 @@ local function mineIt()
             print("error ")
         end
 
-    
     end
 end
 end

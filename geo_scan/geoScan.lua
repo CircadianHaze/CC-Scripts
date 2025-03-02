@@ -21,7 +21,6 @@ local blocks = {
     ["create:deepslate_zinc_ore"] = true,
     ["minecraft:deepslate_lapis_ore"] = true,
     ["minecraft:lapis_ore"] = true
-
 }
 
 local ITEM_DATA = {
@@ -36,14 +35,10 @@ local ITEM_DATA = {
     ["minecraft:raw_copper"] = true,
     ["create:raw_zinc"] = true,
     ["minecraft:lapis_lazuli"] = true
-
 }
 
 local scanData, err = geoScanner.scan(16)
 local outerTable = {}
-
-
-
 
 for i, block in ipairs(scanData) do
     if blocks[block.name] then
@@ -52,7 +47,6 @@ for i, block in ipairs(scanData) do
         table.insert(outerTable, blockCoords)
     end
 end
-
 
 function printTable(t)
     for k, v in ipairs(t) do
@@ -66,28 +60,6 @@ end
 
 printTable(outerTable)
 
---[[
-function garbageDisposal()
-    
-    turtle.select(1)
-
-    for i = 1, 16 do
-        turtle.select(i)
-        local data = turtle.getItemDetail()
-        if data then
-            if blocks[data.name] then
-                -- we don't want to do anything here
-            end
-        else
-            -- if item is not in blocks then get rid of it
-            turtle.drop()
-
-        end
-        
-    end
-
-end
-]]--
 function garbageDisposal()
     for i = 1, 16 do
         turtle.select(i)
@@ -101,7 +73,6 @@ function garbageDisposal()
         end
     end
 end
-
 
 function goMine(outerTable)
 

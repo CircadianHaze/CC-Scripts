@@ -1,11 +1,7 @@
-
 local mon = peripheral.find("monitor")
 local accumulator = peripheral.find("modular_accumulator")
 
-
-
 local secondEnergy = accumulator.getEnergy()
-
 local counter = 0
 
 mon.clear()
@@ -26,7 +22,6 @@ local function writeColoredText(text, color)
     mon.write(text)
     mon.setTextColor(colors.white)
 end
-
 
 local function thePercent()
     local percent = accumulator.getPercent()
@@ -53,7 +48,6 @@ function writeToMonitor(text)
     mon.setTextColor(colors.green)
     local width, height = mon.getSize()
     local lines = wrapText(text, width)
-    --mon.clear()
     for i, line in ipairs(lines) do
         if i > height then break end -- Avoid writing beyond the monitor's height
         mon.setCursorPos(1, i + 4)
@@ -64,13 +58,10 @@ end
 
 while true do
     
-
     local energyLoop = accumulator.getEnergy()
     local percentLoop = thePercent()
     sleep(3)
     secondEnergy = accumulator.getEnergy()
-    
-    
 
     -- Calculate the difference based on the previous energy reading
     local difference = 0
@@ -80,7 +71,6 @@ while true do
     
     mon.setCursorPos(1, 1)
     writeColoredText("Electrical System Data", "red")
-    
     
     mon.setCursorPos(1, 2)
     writeColoredText("Diff: ", "blue")
@@ -95,11 +85,6 @@ while true do
     writeColoredText(tostring(percentLoop), "white")
     
     writeToMonitor(myText)
-
-    -- Update secondEnergy for the next cycle
-    
-
-    
 end
 
 

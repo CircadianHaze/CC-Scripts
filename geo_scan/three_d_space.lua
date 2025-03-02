@@ -149,7 +149,6 @@ local function moveTo(coordinates)
 
 end
 
-
 local function returnTo()
     moveTo(origin)
     faceNorth()
